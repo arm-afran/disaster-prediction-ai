@@ -1,5 +1,5 @@
 """
-Earth Intelligence | Enterprise Disaster Prediction Dashboard
+GeoShield AI | Enterprise Disaster Prediction Dashboard
 File: app.py
 Commercial-Grade Streamlit Application for Real-Time Earth Engine Analytics
 """
