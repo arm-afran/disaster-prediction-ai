@@ -12,15 +12,14 @@ Architecture Overview:
    using threshold-based heuristics to create training data ('Flood', 'Drought', 'Normal').
 4. ML Engine: Trains an optimized scikit-learn Random Forest Classifier on remote
    sensing spectral signatures.
-5. EE Classification Integration: Synchronizes trained features into server-side 
-   ee.Classifier for scalable inference across millions of raster pixels.
+5. EE Classification Integration: Converts scikit-learn tree structures into 
+   `ee.Classifier.decisionTreeEnsemble` for scalable client-to-server inference.
 6. Analytics & Map Generation: Synthesizes class distribution stats, metrics, 
-   and interactive Map objects using geemap.
+   and interactive Map objects using `geemap`.
 """
 
 from typing import Dict, Any, Tuple
 import logging
-import json
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -271,7 +270,7 @@ def export_data_summary(
     for item in stats.get('groups', []):
         class_idx = int(item['class'])
         label = CLASS_LABELS.get(class_idx, "Unknown")
-        area_sqkm = item['sum'] / 1e6  # Convert square meters to Sq Kilometers
+        area_sqkm = item['sum'] / 1e6  # Square meters to Sq Kilometers
         class_areas_sqkm[label] = round(area_sqkm, 2)
         
     summary = {
@@ -318,7 +317,7 @@ if __name__ == "__main__":
     # Example Execution Parameters
     GOOGLE_PROJECT_ID = "your-gcp-project-id"  # Replace with valid GCP Project ID
     
-    # Target ROI: Region vulnerable to seasonal flooding and dry spells
+    # Target ROI: Lake Chad Basin region (Historical area prone to both flood and drought)
     TARGET_ROI = ee.Geometry.Polygon([
         [[13.80, 12.80], [13.80, 13.50], [14.80, 13.50], [14.80, 12.80]]
     ])
@@ -336,9 +335,10 @@ if __name__ == "__main__":
         
         logger.info("Pipeline executed successfully.")
         print("\n--- DATA SUMMARY STRUCT ---")
+        import json
         print(json.dumps(summary, indent=2))
         
-        # Export map to HTML for local rendering:
+        # Display/Save Map:
         # prediction_map.to_html("drought_flood_prediction.html")
         
     except Exception as e:
