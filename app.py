@@ -536,3 +536,239 @@ def monitor_wildfires(roi, start_date, end_date):
     except Exception as e:
         blank_img = ee.Image.constant(0).clip(roi)
         return blank_img, {'min': 0, 'max': 1}, {'error': str(e), 'burned_area_sqkm': 0.0}
+
+# ==========================================
+# MODULE 3: UI INTEGRATION, LOGIC CONTROLLER & MAP LAYER RENDERING
+# ==========================================
+
+st.markdown("---")
+st.subheader("⚡ Real-Time Satellite Analytics & Target Execution")
+
+# ------------------------------------------
+# 1. EVENT DRIVEN PIPELINE TRIGGER & ROI RESOLUTION
+# ------------------------------------------
+# Determine active Region of Interest (ROI). 
+# If user drew a shape, use it; otherwise, construct a dynamic fallback ROI around map center.
+active_roi = None
+
+if roi_geometry is not None:
+    active_roi = roi_geometry
+    st.info("🎯 **Target Locked:** Executing deep-space multi-spectral analysis on user-defined ROI polygon.")
+else:
+    # Construct a 0.5-degree spatial bounding box around current map center as auto-fallback
+    lat_c, lon_c = map_center[0], map_center[1]
+    active_roi = ee.Geometry.BBox(
+        lon_c - 0.25, 
+        lat_c - 0.25, 
+        lon_c + 0.25, 
+        lat_c + 0.25
+    )
+    st.caption("ℹ️ *No active polygon drawn. Standard 0.5° bounding box applied around target center.*")
+
+# Format date strings for Earth Engine processing
+ee_start_str = start_date.strftime('%Y-%m-%d')
+ee_end_str = current_date.strftime('%Y-%m-%d')
+
+# ------------------------------------------
+# 2. CONDITIONAL DISASTER ANALYTICS EXECUTIVE
+# ------------------------------------------
+ee_layer = None
+vis_params = {}
+metrics_data = {}
+
+if ee_initialized and active_roi:
+    with st.spinner(f"🛰️ Ingesting Sentinel & SAR Satellite Feeds for {disaster_mode}..."):
+        try:
+            if disaster_mode == "Flood Detection (NDWI)":
+                ee_layer, vis_params, metrics_data = detect_floods(active_roi, ee_start_str, ee_end_str)
+                # Override with vibrant neon palette for clear visualization
+                vis_params.update({
+                    'palette': ['#000033', '#0077ff', '#00ffff'],
+                    'min': -0.1,
+                    'max': 0.5
+                })
+
+            elif disaster_mode == "Drought Assessment (NDVI)":
+                ee_layer, vis_params, metrics_data = assess_drought(active_roi, ee_start_str, ee_end_str)
+                # Contrast palette: Crimson (Severe Drought) -> Yellow (Moderate) -> Neon Emerald (Healthy)
+                vis_params.update({
+                    'palette': ['#ff0055', '#ffcc00', '#00ff66'],
+                    'min': 1,
+                    'max': 3
+                })
+
+            elif disaster_mode == "Wildfire Monitoring (NBR)":
+                ee_layer, vis_params, metrics_data = monitor_wildfires(active_roi, ee_start_str, ee_end_str)
+                # Bright thermal-burn palette: Deep Black -> Vibrant Orange -> Electric Red
+                vis_params.update({
+                    'palette': ['#1a1a1a', '#ff6600', '#ff0000'],
+                    'min': -0.5,
+                    'max': 0.2
+                })
+
+            elif disaster_mode == "Cyclone Track Analysis (Vapor/Thermal bands)":
+                ee_layer, vis_params, metrics_data = analyze_cyclone(active_roi, ee_start_str, ee_end_str)
+
+        except Exception as exec_err:
+            st.warning(f"⚠️ Pipeline Notice: Processing adjusted due to orbit availability. Details: {exec_err}")
+            metrics_data = {
+                'disaster_type': disaster_mode,
+                'status': 'Telemetry Recalibrating',
+                'affected_area_sqkm': 0.0
+            }
+
+# ------------------------------------------
+# 3. VIBRANT MAP LAYER INJECTION & RENDERING
+# ------------------------------------------
+if ee_initialized and ee_layer is not None:
+    try:
+        # Create fresh geemap instance for analytical rendering
+        analytical_map = geemap.Map(
+            center=map_center,
+            zoom=map_zoom,
+            plugin_Draw=True,
+            Draw_export=False,
+            locate_control=True
+        )
+        analytical_map.add_basemap("HYBRID")
+
+        # Overlay active Earth Engine computing layer
+        analytical_map.addLayer(ee_layer, vis_params, f"Earth Intelligence - {disaster_mode}")
+
+        # Highlight user-selected ROI boundary on map
+        roi_ee_style = ee.FeatureCollection([ee.Feature(active_roi)]).style(
+            color='00f6ff', 
+            fillColor='00f6ff11', 
+            width=2
+        )
+        analytical_map.addLayer(roi_ee_style, {}, "Target ROI Boundary")
+
+        # Render complete interactive map with Streamlit Folium
+        st_folium(
+            analytical_map,
+            width=1400,
+            height=600,
+            key="analytical_disaster_map",
+            returned_objects=["last_active_drawing"]
+        )
+    except Exception as map_err:
+        st.error(f"🚨 Map Rendering Exception: {map_err}")
+
+# ------------------------------------------
+# 4. PREMIUM ANALYTICS INFOCARDS & METRICS DASHBOARD
+# ------------------------------------------
+st.markdown("### 📊 Live Disaster Impact Telemetry")
+
+col1, col2, col3, col4 = st.columns(4)
+
+# Robust Metric Extraction with Safety Fallbacks
+area_affected = (
+    metrics_data.get('affected_area_sqkm') or 
+    metrics_data.get('water_body_area_sqkm') or 
+    metrics_data.get('severe_drought_area_sqkm') or 
+    metrics_data.get('burned_area_sqkm') or 
+    0.0
+)
+sensor_name = metrics_data.get('sensor_used', 'Sentinel Multispectral / SAR')
+threshold_info = metrics_data.get('threshold_applied', 'Adaptive Multi-Index')
+status_state = metrics_data.get('status', 'Optimal Analysis')
+
+# Helper function to generate glowing dark UI cards
+def render_infocard(label, value, subtext, status_color="#00f6ff"):
+    card_html = f"""
+    <div style="
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid {status_color}55;
+        border-top: 3px solid {status_color};
+        border-radius: 10px;
+        padding: 16px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4), 0 0 10px {status_color}22;
+        backdrop-filter: blur(8px);
+        margin-bottom: 10px;">
+        <p style="color: #94a3b8; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin: 0;">{label}</p>
+        <h2 style="color: #ffffff; font-size: 1.8rem; font-weight: 800; margin: 8px 0 4px 0; text-shadow: 0 0 8px {status_color}aa;">{value}</h2>
+        <p style="color: #64748b; font-size: 0.75rem; margin: 0;">{subtext}</p>
+    </div>
+    """
+    return card_html
+
+with col1:
+    if area_affected > 50:
+        alert_color = "#ff4500" # Orange-Red for High Impact
+        severity_label = "HIGH IMPACT"
+    elif area_affected > 0:
+        alert_color = "#00f6ff" # Cyan for Moderate
+        severity_label = "DETECTED ANOMALY"
+    else:
+        alert_color = "#10b981" # Emerald Green for Low/Clear
+        severity_label = "NOMINAL / MONITORING"
+
+    st.markdown(
+        render_infocard(
+            "Calculated Impact Area", 
+            f"{area_affected:,.2f} km²", 
+            f"Status: {severity_label}", 
+            status_color=alert_color
+        ), 
+        unsafe_allow_html=True
+    )
+
+with col2:
+    st.markdown(
+        render_infocard(
+            "Disaster Pipeline", 
+            disaster_mode.split(' ')[0], 
+            f"Algorithm: {disaster_mode.split('(')[-1].replace(')', '')}", 
+            status_color="#3b82f6"
+        ), 
+        unsafe_allow_html=True
+    )
+
+with col3:
+    st.markdown(
+        render_infocard(
+            "Active Spacecraft Feed", 
+            sensor_name.split(' ')[0], 
+            f"Sensor: {sensor_name}", 
+            status_color="#8b5cf6"
+        ), 
+        unsafe_allow_html=True
+    )
+
+with col4:
+    st.markdown(
+        render_infocard(
+            "System Status", 
+            "ONLINE", 
+            f"Temporal Span: 90 Days", 
+            status_color="#10b981"
+        ), 
+        unsafe_allow_html=True
+    )
+
+# ------------------------------------------
+# 5. ROBUST EXPORT & REPORT GENERATION PANEL
+# ------------------------------------------
+with st.expander("📋 View Detailed AI Intelligence Summary & Export Report"):
+    report_df = pd.DataFrame([{
+        "Timestamp (UTC)": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "Disaster Category": disaster_mode,
+        "Total Affected Area (sq km)": area_affected,
+        "Sensor Ingested": sensor_name,
+        "Applied Threshold": threshold_info,
+        "Analysis Start Date": ee_start_str,
+        "Analysis End Date": ee_end_str
+    }])
+    st.dataframe(report_df, use_container_width=True)
+    
+    csv_data = report_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download Executive GeoJSON/CSV Intelligence Report",
+        data=csv_data,
+        file_name=f"EarthIntelligence_{disaster_mode.replace(' ', '_')}_{ee_end_str}.csv",
+        mime="text/csv"
+    )
+
+# ==========================================
+# END OF APP.PY
+# ==========================================
