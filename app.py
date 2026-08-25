@@ -1,427 +1,235 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-GeoShield AI | Enterprise Disaster Prediction Dashboard
-File: app.py
-Commercial-Grade Streamlit Application for Real-Time Earth Engine Analytics
+Earth Intelligence - Open-World Multi-Disaster Prediction App
+Module 1: Infrastructure Initialization, Premium UI/UX, and Global Control Panel
 """
 
-import json
-import logging
+# ==========================================
+# 1. ABSOLUTE LIBRARY IMPORTS
+# ==========================================
 import streamlit as st
-import folium
-from streamlit_folium import st_folium
+import ee
+import geemap.foliumap as geemap
+import datetime
 import pandas as pd
 import numpy as np
+import requests
+import json
+from streamlit_folium import st_folium
+from google.oauth2 import service_account
 
-# Import core Earth Engine ML architecture from model.py
-try:
-    from model import DisasterPredictor
-except ImportError:
-    # Graceful fallback wrapper matching model.py specification
-    from model import execute_drought_flood_pipeline, initialize_earth_engine
-    
-    class DisasterPredictor:
-        def __init__(self, project_id=None):
-            self.project_id = project_id
-            initialize_earth_engine(project_id)
-            
-        def run_analysis(self, aoi_bounds, start_date, end_date):
-            return execute_drought_flood_pipeline(aoi_bounds, start_date, end_date, self.project_id)
-
-# -----------------------------------------------------------------------------
-# 1. STREAMLIT PAGE CONFIGURATION & DARK THEME CSS
-# -----------------------------------------------------------------------------
+# ==========================================
+# 2. STREAMLIT PAGE CONFIGURATION
+# ==========================================
 st.set_page_config(
-    page_title="GeoShield AI | Disaster Prediction System",
+    page_title="Earth Intelligence | Multi-Disaster AI",
     page_icon="🌍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom High-End Commercial Dark Theme Styling
-CUSTOM_CSS = """
+# ==========================================
+# 3. PREMIUM CORPORATE DARK-THEME CSS
+# ==========================================
+PREMIUM_CSS = """
 <style>
-    /* Dark Theme Global Overrides */
+    /* Global Background and Typography */
     .stApp {
-        background-color: #0B0E14;
-        color: #E2E8F0;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        background: radial-gradient(circle at 50% 0%, #1e293b, #0f172a 70%);
+        color: #e2e8f0;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     
-    /* Sidebar Customization */
-    section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #111827 0%, #0B0F19 100%);
-        border-right: 1px solid #1E293B;
+    /* Sidebar Styling with Glow */
+    [data-testid="stSidebar"] {
+        background-color: rgba(15, 23, 42, 0.95) !important;
+        border-right: 1px solid #00f6ff33;
+        box-shadow: 2px 0 15px rgba(0, 246, 255, 0.1);
     }
     
-    /* Custom Sidebar Header Card */
-    .sidebar-brand {
-        padding: 1.25rem 1rem;
-        background: rgba(30, 41, 59, 0.5);
-        border: 1px solid rgba(255, 255, 255, 0.08);
+    /* Input Elements (Text Box, Dropdowns) */
+    .stTextInput>div>div>input {
+        background-color: #1e293b !important;
+        color: #00f6ff !important;
+        border: 1px solid #3b82f6 !important;
+        border-radius: 8px;
+        box-shadow: inset 0 0 5px rgba(59, 130, 246, 0.5);
+        transition: all 0.3s ease-in-out;
+    }
+    .stTextInput>div>div>input:focus {
+        border: 1px solid #00f6ff !important;
+        box-shadow: 0 0 15px rgba(0, 246, 255, 0.6), inset 0 0 8px rgba(0, 246, 255, 0.4);
+    }
+    
+    /* Selectbox Styling */
+    div[data-baseweb="select"] > div {
+        background-color: #1e293b;
+        border: 1px solid #3b82f6;
+        border-radius: 8px;
+        color: #e2e8f0;
+        box-shadow: 0 0 10px rgba(59, 130, 246, 0.2);
+    }
+    
+    /* Map Container Glowing Border */
+    iframe {
+        border: 2px solid #00f6ff;
         border-radius: 12px;
-        margin-bottom: 1.5rem;
-        text-align: center;
+        box-shadow: 0 0 25px rgba(0, 246, 255, 0.25), inset 0 0 15px rgba(0, 246, 255, 0.15);
+        background-color: #000000;
     }
-    .sidebar-brand h2 {
-        color: #38BDF8;
-        font-size: 1.25rem;
-        font-weight: 700;
-        margin: 0;
-        letter-spacing: 0.5px;
+    
+    /* Headers */
+    h1, h2, h3 {
+        color: #ffffff;
+        text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
     }
-    .sidebar-brand p {
-        color: #94A3B8;
-        font-size: 0.75rem;
-        margin: 4px 0 0 0;
-        text-transform: uppercase;
-        letter-spacing: 1px;
+    
+    /* Success/Info Messages */
+    .stSuccess {
+        background-color: rgba(16, 185, 129, 0.1) !important;
+        border: 1px solid #10b981 !important;
+        color: #10b981 !important;
+        box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
     }
-
-    /* Metric Card Component */
-    .metric-card {
-        background: linear-gradient(135deg, rgba(30, 41, 59, 0.6) 0%, rgba(15, 23, 42, 0.8) 100%);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 14px;
-        padding: 1.25rem 1.5rem;
-        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
-        backdrop-filter: blur(12px);
-        transition: transform 0.2s ease, border-color 0.2s ease;
-    }
-    .metric-card:hover {
-        border-color: rgba(56, 189, 248, 0.4);
-        transform: translateY(-2px);
-    }
-    .metric-label {
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: #94A3B8;
-        text-transform: uppercase;
-        letter-spacing: 0.8px;
-        margin-bottom: 0.5rem;
-    }
-    .metric-value {
-        font-size: 2.1rem;
-        font-weight: 800;
-        color: #F8FAFC;
-        line-height: 1;
-    }
-    .metric-subtext {
-        font-size: 0.78rem;
-        margin-top: 0.5rem;
-        font-weight: 500;
-    }
-    .text-emerald { color: #10B981; }
-    .text-sky { color: #38BDF8; }
-    .text-rose { color: #F43F5E; }
-    .text-amber { color: #F59E0B; }
-
-    /* Custom Streamlit Button */
-    div.stButton > button {
-        width: 100%;
-        background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%);
-        color: #FFFFFF;
-        border: none;
-        padding: 0.75rem 1.5rem;
-        font-weight: 600;
-        font-size: 0.95rem;
-        border-radius: 10px;
-        box-shadow: 0 4px 14px 0 rgba(37, 99, 235, 0.39);
-        transition: all 0.2s ease;
-    }
-    div.stButton > button:hover {
-        background: linear-gradient(135deg, #1D4ED8 0%, #1E40AF 100%);
-        box-shadow: 0 6px 20px 0 rgba(37, 99, 235, 0.55);
-    }
-
-    /* Hide default Streamlit padding & footer */
-    .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
-    }
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
 </style>
 """
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+st.markdown(PREMIUM_CSS, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# 2. CONSTANTS & GEOGRAPHIC BOUNDING BOXES
-# -----------------------------------------------------------------------------
-PRESET_REGIONS = {
-    "California, USA (Central Valley)": [-120.5, 36.5, -119.8, 37.2],
-    "Sindh Province, Pakistan (Indus Basin)": [68.0, 25.5, 69.2, 26.8],
-    "Queensland, Australia (Darling Downs)": [151.0, -28.0, 152.2, -27.0],
-    "Rio Grande do Sul, Brazil": [-52.5, -30.5, -51.2, -29.2]
-}
+# ==========================================
+# 4. ROBUST GOOGLE EARTH ENGINE INIT
+# ==========================================
+@st.cache_resource
+def initialize_earth_engine():
+    """Initializes Google Earth Engine using Streamlit Secrets with error handling."""
+    try:
+        if not ee.data._credentials:
+            ee_creds = st.secrets["EARTH_ENGINE_CREDENTIALS"]
+            credentials = service_account.Credentials.from_service_account_info(ee_creds)
+            ee.Initialize(credentials)
+            return True
+    except KeyError:
+        st.error("🚨 Configuration Error: 'EARTH_ENGINE_CREDENTIALS' not found in st.secrets.")
+        return False
+    except Exception as e:
+        st.error(f"🚨 Earth Engine Initialization Failed: {str(e)}")
+        return False
+    return True
 
-# -----------------------------------------------------------------------------
-# 3. SIDEBAR CONTROLS
-# -----------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown(
-        """
-        <div class="sidebar-brand">
-            <h2>🌍 GeoShield AI</h2>
-            <p>Predictive Earth Intelligence</p>
-        </div>
-        """,
-        unsafe_allow_html=True
+ee_initialized = initialize_earth_engine()
+
+# ==========================================
+# 5. DISASTER SELECTOR SIDEBAR
+# ==========================================
+st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Google_Earth_icon.svg/2048px-Google_Earth_icon.svg.png", width=60)
+st.sidebar.title("Earth Intelligence")
+st.sidebar.markdown("---")
+
+disaster_mode = st.sidebar.selectbox(
+    "🛰️ Select Disaster Analysis Mode",
+    [
+        "Flood Detection (NDWI)",
+        "Drought Assessment (NDVI)",
+        "Wildfire Monitoring (NBR)",
+        "Cyclone Track Analysis (Vapor/Thermal bands)"
+    ],
+    index=0
+)
+
+# ==========================================
+# 6. REAL-TIME DATE STREAMER
+# ==========================================
+st.sidebar.markdown("### ⏱️ Temporal Parameters")
+current_date = datetime.datetime.today()
+start_date = current_date - datetime.timedelta(days=90)
+
+st.sidebar.info(
+    f"**Live Data Stream (Last 90 Days):**\n\n"
+    f"🟢 **Start:** {start_date.strftime('%Y-%m-%d')}\n\n"
+    f"🔴 **End:** {current_date.strftime('%Y-%m-%d')}"
+)
+st.sidebar.markdown("---")
+st.sidebar.caption("Powered by Google Earth Engine & AI")
+
+# ==========================================
+# 7. GLOBAL OPEN-WORLD CONTROL PANEL
+# ==========================================
+st.title("🌐 Global Open-World Control Panel")
+st.markdown("Search for any region globally and draw a polygon to extract real-time AI analytics.")
+
+# Search Box Logic using Nominatim API for accurate lat/lon resolution
+search_query = st.text_input("🔍 Global Search (City, Province, or Country)", placeholder="e.g., California, USA or Tokyo, Japan")
+
+# Default Global Center
+map_center = [20.0, 0.0]
+map_zoom = 2
+
+if search_query:
+    try:
+        headers = {'User-Agent': 'EarthIntelligenceApp/1.0'}
+        url = f"https://nominatim.openstreetmap.org/search?q={search_query}&format=json&limit=1"
+        response = requests.get(url, headers=headers).json()
+        if response:
+            map_center = [float(response[0]['lat']), float(response[0]['lon'])]
+            map_zoom = 10
+            st.success(f"📍 Location locked: {response[0]['display_name']}")
+        else:
+            st.warning("⚠️ Location not found. Showing global view.")
+    except Exception as e:
+        st.error(f"Geocoding Error: {e}")
+
+# Render Interactive Geemap
+if ee_initialized:
+    # Initialize Map with drawing tools enabled
+    m = geemap.Map(
+        center=map_center, 
+        zoom=map_zoom, 
+        plugin_Draw=True,
+        Draw_export=False,
+        locate_control=True,
+        plugin_LatLngPopup=False
     )
     
-    st.subheader("📍 Target Location")
-    selected_region = st.selectbox(
-        "Select Country / Region",
-        options=list(PRESET_REGIONS.keys()),
-        index=0
+    # Add Premium Basemap (Google Hybrid)
+    m.add_basemap("HYBRID")
+    
+    # Map rendering with Streamlit Folium wrapper to capture events
+    st.markdown("### 🗺️ Intelligence Map")
+    map_data = st_folium(
+        m, 
+        width=1400, 
+        height=650, 
+        returned_objects=["last_active_drawing", "last_clicked"]
     )
     
-    st.subheader("🗓️ Temporal Range")
-    analysis_year = st.selectbox(
-        "Analysis Year",
-        options=[2025, 2024, 2023, 2022, 2021],
-        index=2
-    )
+    # Event Listener / Placeholder for captured ROI (Region of Interest)
+    st.markdown("### 🎯 Telemetry & Geometry Capture")
     
-    season_quarter = st.select_slider(
-        "Observation Window",
-        options=["Q1 (Jan-Mar)", "Q2 (Apr-Jun)", "Q3 (Jul-Sep)", "Q4 (Oct-Dec)"],
-        value="Q2 (Apr-Jun)"
-    )
-
-    st.subheader("⚠️ Hazard Filter")
-    hazard_type = st.radio(
-        "Primary Focus Hazard",
-        options=["Flood Risk", "Drought Severity", "Combined Hazards"],
-        index=2
-    )
-
-    st.markdown("---")
-    execute_button = st.button("⚡ Run Predictive Analytics", use_container_width=True)
-
-
-# -----------------------------------------------------------------------------
-# 4. HELPER UTILITIES FOR MAP RENDER
-# -----------------------------------------------------------------------------
-def build_folium_map(aoi_bounds: list) -> folium.Map:
-    """Generates a high-contrast dark-themed Folium map centered on target AOI."""
-    center_lat = (aoi_bounds[1] + aoi_bounds[3]) / 2.0
-    center_lon = (aoi_bounds[0] + aoi_bounds[2]) / 2.0
-    
-    m = folium.Map(
-        location=[center_lat, center_lon],
-        zoom_start=9,
-        tiles="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-        attr="&copy; <a href='https://carto.com/'>CARTO</a>",
-        control_scale=True
-    )
-    
-    # Highlight AOI Bounding Box
-    bounds_geo = [
-        [aoi_bounds[1], aoi_bounds[0]],
-        [aoi_bounds[1], aoi_bounds[2]],
-        [aoi_bounds[3], aoi_bounds[2]],
-        [aoi_bounds[3], aoi_bounds[0]],
-        [aoi_bounds[1], aoi_bounds[0]]
-    ]
-    folium.PolyLine(
-        bounds_geo,
-        color="#38BDF8",
-        weight=2.5,
-        opacity=0.85,
-        tooltip="Active Analysis Bounding Box"
-    ).add_to(m)
-    
-    return m
-
-
-# -----------------------------------------------------------------------------
-# 5. MAIN DASHBOARD CONTENT
-# -----------------------------------------------------------------------------
-st.title("🛡️ Predictive Disaster AI Dashboard")
-st.caption("Satellite Index Machine Learning Framework | Copernicus Sentinel-2 Infrastructure")
-
-# Map quarter selection to ISO date range
-quarter_map = {
-    "Q1 (Jan-Mar)": (f"{analysis_year}-01-01", f"{analysis_year}-03-31"),
-    "Q2 (Apr-Jun)": (f"{analysis_year}-04-01", f"{analysis_year}-06-30"),
-    "Q3 (Jul-Sep)": (f"{analysis_year}-07-01", f"{analysis_year}-09-30"),
-    "Q4 (Oct-Dec)": (f"{analysis_year}-10-01", f"{analysis_year}-12-31"),
-}
-start_date, end_date = quarter_map[season_quarter]
-aoi_coords = PRESET_REGIONS[selected_region]
-
-# Initialize Session State Data
-if "pipeline_results" not in st.session_state:
-    st.session_state["pipeline_results"] = None
-
-# Execute Model Pipeline on Demand
-if execute_button:
-    with st.spinner("🤖 Fetching Sentinel-2 Reflectance & Running Random Forest Classifier..."):
-        try:
-            predictor = DisasterPredictor()
-            results = predictor.run_analysis(
-                aoi_bounds=aoi_coords,
-                start_date=start_date,
-                end_date=end_date
-            )
-            st.session_state["pipeline_results"] = results
-            st.success("Analytics Pipeline Execution Complete!")
-        except Exception as e:
-            st.error(f"Execution Error: {str(e)}")
-            st.info("Operating in Simulation Display Mode (Earth Engine Connection Fallback).")
-            # Mock results payload for seamless fallback demonstration
-            st.session_state["pipeline_results"] = {
-                "execution_status": "SUCCESS",
-                "model_performance_metrics": {
-                    "accuracy": 0.942,
-                    "classification_report": {
-                        "Normal": {"precision": 0.95, "recall": 0.96},
-                        "Flood": {"precision": 0.92, "recall": 0.91},
-                        "Drought": {"precision": 0.93, "recall": 0.94}
-                    },
-                    "feature_importances": {"NDVI": 0.584, "NDWI": 0.416}
-                },
-                "spatial_area_distribution": {
-                    "Normal": "1,420.5 sq km",
-                    "Flood": "184.2 sq km",
-                    "Drought": "310.8 sq km"
-                }
-            }
-
-results = st.session_state["pipeline_results"]
-
-# Derive Display Metrics
-if results:
-    metrics = results.get("model_performance_metrics", {})
-    spatial = results.get("spatial_area_distribution", {})
-    confidence_score = f"{metrics.get('accuracy', 0.92) * 100:.1f}%"
-    
-    flood_area = spatial.get("Flood", "184.2 sq km")
-    drought_area = spatial.get("Drought", "310.8 sq km")
-    
-    if hazard_type == "Flood Risk":
-        hotspots_display = flood_area
-        hazard_label = "Flood Inundation Area"
-        hazard_color = "text-sky"
-    elif hazard_type == "Drought Severity":
-        hotspots_display = drought_area
-        hazard_label = "Drought Stress Area"
-        hazard_color = "text-rose"
+    roi_geometry = None
+    if map_data and map_data.get("last_active_drawing"):
+        drawing_data = map_data["last_active_drawing"]
+        geom_type = drawing_data["geometry"]["type"]
+        coords = drawing_data["geometry"]["coordinates"]
+        
+        # Convert drawn geojson to Earth Engine Geometry
+        if geom_type == "Polygon":
+            roi_geometry = ee.Geometry.Polygon(coords)
+            st.success(f"✅ Polygon ROI Captured successfully! Coordinates mapped for {disaster_mode}.")
+        elif geom_type == "Point":
+            roi_geometry = ee.Geometry.Point(coords)
+            st.success(f"✅ Point ROI Captured successfully! Coordinates mapped for {disaster_mode}.")
+            
+        with st.expander("View Raw GeoJSON Coordinates"):
+            st.json(drawing_data)
+            
+    elif map_data and map_data.get("last_clicked"):
+        click_data = map_data["last_clicked"]
+        st.info(f"🖱️ Map clicked at Latitude: {click_data['lat']:.4f}, Longitude: {click_data['lng']:.4f}. Draw a polygon to initiate deep analysis.")
     else:
-        hotspots_display = f"{flood_area} / {drought_area}"
-        hazard_label = "Flood / Drought Coverage"
-        hazard_color = "text-amber"
+        st.info("✋ Waiting for user interaction. Please draw a bounding box/polygon on the map to proceed.")
+
 else:
-    confidence_score = "94.2%"
-    hotspots_display = "495.0 sq km"
-    hazard_label = "Impacted Hazard Hotspots"
-    hazard_color = "text-sky"
+    st.warning("Map visualization disabled pending Earth Engine authentication.")
 
-# -----------------------------------------------------------------------------
-# 6. METRIC CARDS ROW
-# -----------------------------------------------------------------------------
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-label">AI Model Confidence</div>
-            <div class="metric-value text-emerald">{confidence_score}</div>
-            <div class="metric-subtext text-emerald">● Random Forest Validated</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with col2:
-    st.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-label">{hazard_label}</div>
-            <div class="metric-value {hazard_color}">{hotspots_display}</div>
-            <div class="metric-subtext {hazard_color}">● High Confidence Mask</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with col3:
-    st.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-label">Satellite Platform</div>
-            <div class="metric-value">Sentinel-2</div>
-            <div class="metric-subtext text-sky">● 10m Optical Resolution</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with col4:
-    st.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-label">Telemetry Status</div>
-            <div class="metric-value text-emerald">ACTIVE</div>
-            <div class="metric-subtext text-emerald">● {season_quarter} ({analysis_year})</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# -----------------------------------------------------------------------------
-# 7. INTERACTIVE MAP & ANALYTICS PANELS
-# -----------------------------------------------------------------------------
-map_col, stats_col = st.columns([2.2, 1])
-
-with map_col:
-    st.subheader("🗺️ Spatial Prediction Telemetry")
-    interactive_map = build_folium_map(aoi_coords)
-    st_folium(interactive_map, width="100%", height=500, returned_objects=[])
-
-with stats_col:
-    st.subheader("📊 Model Feature Weighting")
-    
-    if results:
-        feat_imp = results["model_performance_metrics"]["feature_importances"]
-        imp_df = pd.DataFrame({
-            "Feature Index": list(feat_imp.keys()),
-            "Importance Weight": list(feat_imp.values())
-        })
-        st.dataframe(
-            imp_df,
-            column_config={
-                "Importance Weight": st.column_config.ProgressColumn(
-                    "Weight",
-                    format="%.3f",
-                    min_value=0,
-                    max_value=1.0,
-                ),
-            },
-            hide_index=True,
-            use_container_width=True
-        )
-    
-    st.subheader("🏷️ Hazard Legend")
-    st.markdown(
-        """
-        <div style="background: rgba(15, 23, 42, 0.8); padding: 1rem; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08);">
-            <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                <span style="height: 14px; width: 14px; background-color: #2ECC71; border-radius: 3px; display: inline-block; margin-right: 10px;"></span>
-                <span style="font-size: 0.9rem;">Normal Vegetation / Terrain</span>
-            </div>
-            <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                <span style="height: 14px; width: 14px; background-color: #3498DB; border-radius: 3px; display: inline-block; margin-right: 10px;"></span>
-                <span style="font-size: 0.9rem;">Flood Inundation (High NDWI)</span>
-            </div>
-            <div style="display: flex; align-items: center;">
-                <span style="height: 14px; width: 14px; background-color: #E74C3C; border-radius: 3px; display: inline-block; margin-right: 10px;"></span>
-                <span style="font-size: 0.9rem;">Drought Stress (Depressed NDVI)</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+# --- End of Module 1 ---
