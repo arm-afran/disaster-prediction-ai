@@ -11,7 +11,7 @@ Module 1: Infrastructure Initialization, Premium UI/UX, and Global Control Panel
 # ==========================================
 import streamlit as st
 import ee
-import geemap.foliumap as geemap
+import geemap
 import datetime
 import pandas as pd
 import numpy as np
