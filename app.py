@@ -1,121 +1,63 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 """
-Earth Intelligence - Open-World Multi-Disaster Prediction & Monitoring Application
-Enterprise-grade Streamlit application integrating Google Earth Engine for live satellite analysis.
+===============================================================================
+PRODUCTION-READY EARTH ENGINE & SCIKIT-LEARN DROUGHT/FLOOD PREDICTIVE PIPELINE
+===============================================================================
+Architecture Overview:
+----------------------
+1. Ingestion & Preprocessing: Fetches harmonized Sentinel-2 Surface Reflectance 
+   data, applies QA60 cloud masking, and clips to a target Region of Interest (ROI).
+2. Index Extraction: Computes Normalized Difference Vegetation Index (NDVI) and 
+   Normalized Difference Water Index (NDWI) directly within Earth Engine.
+3. Feature Engineering & Sampling: Generates stratified ground-truth samples 
+   using threshold-based heuristics to create training data ('Flood', 'Drought', 'Normal').
+4. ML Engine: Trains an optimized scikit-learn Random Forest Classifier on remote
+   sensing spectral signatures.
+5. EE Classification Integration: Synchronizes trained features into server-side 
+   ee.Classifier for scalable inference across millions of raster pixels.
+6. Analytics & Map Generation: Synthesizes class distribution stats, metrics, 
+   and interactive Map objects using geemap.
 """
 
-# ==========================================
-# 1. ABSOLUTE LIBRARY IMPORTS
-# ==========================================
+from typing import Dict, Any, Tuple
+import logging
 import json
-import datetime
-import requests
-import pandas as pd
 import numpy as np
-import streamlit as st
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score
 import ee
-import geemap.foliumap as geemap
-from streamlit_folium import st_folium
+import geemap
 
-# ==========================================
-# 2. STREAMLIT PAGE CONFIGURATION & DARK THEME CSS
-# ==========================================
-st.set_page_config(
-    page_title="Earth Intelligence | Multi-Disaster AI",
-    page_icon="🌍",
-    layout="wide",
-    initial_sidebar_state="expanded"
+# Configure logging standard
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
 )
+logger = logging.getLogger("EarthEngineAIPipeline")
 
-PREMIUM_DARK_CSS = """
-<style>
-    /* Global Base Styling */
-    .stApp {
-        background: radial-gradient(circle at 50% 0%, #1e293b, #0f172a 70%);
-        color: #e2e8f0;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-    
-    /* Sidebar Styling */
-    [data-testid="stSidebar"] {
-        background-color: rgba(15, 23, 42, 0.95) !important;
-        border-right: 1px solid rgba(0, 246, 255, 0.2);
-        box-shadow: 2px 0 15px rgba(0, 246, 255, 0.05);
-    }
-    
-    /* Input Control Components */
-    .stTextInput>div>div>input {
-        background-color: #1e293b !important;
-        color: #00f6ff !important;
-        border: 1px solid #3b82f6 !important;
-        border-radius: 8px;
-        box-shadow: inset 0 0 5px rgba(59, 130, 246, 0.3);
-        transition: all 0.3s ease-in-out;
-    }
-    .stTextInput>div>div>input:focus {
-        border: 1px solid #00f6ff !important;
-        box-shadow: 0 0 12px rgba(0, 246, 255, 0.5);
-    }
-    
-    div[data-baseweb="select"] > div {
-        background-color: #1e293b !important;
-        border: 1px solid #3b82f6 !important;
-        border-radius: 8px;
-        color: #e2e8f0 !important;
-    }
-    
-    /* Map Frame Aesthetics */
-    iframe {
-        border: 2px solid #00f6ff !important;
-        border-radius: 12px !important;
-        box-shadow: 0 0 20px rgba(0, 246, 255, 0.2) !important;
-    }
-    
-    /* Metrics Header Customizations */
-    h1, h2, h3 {
-        color: #ffffff;
-        font-weight: 700;
-        letter-spacing: -0.5px;
-    }
-</style>
-"""
-st.markdown(PREMIUM_DARK_CSS, unsafe_allow_html=True)
+# Global Configuration Parameters
+CLASS_MAPPING = {"Drought": 0, "Normal": 1, "Flood": 2}
+CLASS_LABELS = {0: "Drought", 1: "Normal", 2: "Flood"}
+PALETTE = ["#d7191c", "#fdae61", "#2b83ba"]  # Red = Drought, Yellow = Normal, Blue = Flood
 
-# ==========================================
-# 3. BULLETPROOF GEE INITIALIZATION
-# ==========================================
-@st.cache_resource
-def initialize_earth_engine():
-    """Safely parses Streamlit secrets and initializes Earth Engine with ServiceAccountCredentials."""
+
+# =============================================================================
+# 1. EARTH ENGINE INITIALIZATION & PREPROCESSING
+# =============================================================================
+
+def initialize_earth_engine(project_id: str) -> None:
+    """Authenticates and initializes the Google Earth Engine API."""
     try:
-        if "EARTH_ENGINE_CREDENTIALS" in st.secrets:
-            creds_raw = st.secrets["EARTH_ENGINE_CREDENTIALS"]
-            if isinstance(creds_raw, str):
-                creds_dict = json.loads(creds_raw, strict=False)
-            else:
-                creds_dict = dict(creds_raw)
-            
-            creds = ee.ServiceAccountCredentials(
-                creds_dict['client_email'],
-                key_data=json.dumps(creds_dict)
-            )
-            ee.Initialize(credentials=creds)
-            return True, "Service Account initialized."
-        else:
-            ee.Initialize()
-            return True, "Standard OAuth initialized."
-    except Exception as e:
-        return False, str(e)
+        ee.Initialize(project=project_id)
+        logger.info(f"Successfully initialized Earth Engine project: {project_id}")
+    except Exception as exc:
+        logger.error(f"Failed to initialize Earth Engine: {exc}")
+        raise RuntimeError("EE Initialization Error") from exc
 
-ee_initialized, ee_status_msg = initialize_earth_engine()
 
-# ==========================================
-# 4. SATELLITE PROCESSING & CLOUD MASKING PIPELINES
-# ==========================================
-def mask_s2_clouds(image):
-    """Masks clouds and cirrus in Sentinel-2 images using QA60 band."""
+def mask_sentinel2_clouds(image: ee.Image) -> ee.Image:
+    """Masks clouds and cirrus using Sentinel-2 QA60 band."""
     qa = image.select('QA60')
     cloud_bit_mask = 1 << 10
     cirrus_bit_mask = 1 << 11
@@ -124,357 +66,280 @@ def mask_s2_clouds(image):
     )
     return image.updateMask(mask).divide(10000.0)
 
-def get_safe_s2_collection(roi, start_date, end_date):
-    """Retrieves cloud-masked Sentinel-2 HARMONIZED collection with fallback range."""
+
+def compute_spectral_indices(image: ee.Image) -> ee.Image:
+    """
+    Computes NDVI and NDWI indices from Sentinel-2 surface reflectance bands.
+    B8 = NIR, B4 = Red, B3 = Green
+    """
+    ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+    ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI')
+    return image.addBands([ndvi, ndwi])
+
+
+def get_sentinel2_composite(
+    roi: ee.Geometry, 
+    start_date: str, 
+    end_date: str
+) -> ee.Image:
+    """Retrieves, masks, and computes median composite over ROI for specified dates."""
+    logger.info(f"Fetching Sentinel-2 SR Harmonized imagery from {start_date} to {end_date}...")
     collection = (
         ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
         .filterBounds(roi)
         .filterDate(start_date, end_date)
-        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60))
+        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+        .map(mask_sentinel2_clouds)
     )
     
-    # Fallback to broader range if initial query returns no images
-    if collection.size().getInfo() == 0:
-        start_dt = datetime.datetime.strptime(str(start_date)[:10], '%Y-%m-%d')
-        fallback_start = (start_dt - datetime.timedelta(days=180)).strftime('%Y-%m-%d')
-        collection = (
-            ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-            .filterBounds(roi)
-            .filterDate(fallback_start, end_date)
-            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 80))
-        )
-        
-    return collection.map(mask_s2_clouds)
+    composite = collection.map(compute_spectral_indices).median().clip(roi)
+    return composite
 
-def detect_floods(roi, start_date, end_date):
-    """Calculates NDWI = (Green - NIR) / (Green + NIR) using Sentinel-2 B3 and B8."""
-    try:
-        s2_col = get_safe_s2_collection(roi, start_date, end_date)
-        s2_img = s2_col.median().clip(roi)
-        ndwi = s2_img.normalizedDifference(['B3', 'B8']).rename('NDWI')
-        
-        water_mask = ndwi.gt(0.0)
-        water_layer = ndwi.updateMask(water_mask)
-        
-        area_img = ee.Image.pixelArea().mask(water_mask).divide(1e6)
-        stats = area_img.reduceRegion(
-            reducer=ee.Reducer.sum(), geometry=roi, scale=20, maxPixels=1e9
-        )
-        water_sqkm = float(stats.get('area', 0).getInfo() or 0.0)
-        
-        vis_params = {
-            'min': 0.0,
-            'max': 0.6,
-            'palette': ['#003366', '#00ffff']
-        }
-        metrics = {
-            'disaster_type': 'Flood Detection (NDWI)',
-            'affected_area_sqkm': round(water_sqkm, 2),
-            'sensor_used': 'Sentinel-2 MSI (B3, B8)',
-            'threshold': 'NDWI > 0.0'
-        }
-        return water_layer, vis_params, metrics
-    except Exception as e:
-        return ee.Image.constant(0).clip(roi), {'min': 0, 'max': 1}, {'affected_area_sqkm': 0.0, 'error': str(e)}
 
-def assess_drought(roi, start_date, end_date):
-    """Calculates NDVI = (NIR - Red) / (NIR + Red) using Sentinel-2 B8 and B4."""
-    try:
-        s2_col = get_safe_s2_collection(roi, start_date, end_date)
-        s2_img = s2_col.median().clip(roi)
-        ndvi = s2_img.normalizedDifference(['B8', 'B4']).rename('NDVI')
-        
-        # Drought Severity Categorization: 1: Severe (<0.2), 2: Moderate (0.2-0.4), 3: Healthy (>0.4)
-        drought_classified = (
-            ee.Image(1).where(ndvi.gte(0.2).And(ndvi.lt(0.4)), 2)
-            .where(ndvi.gte(0.4), 3)
-            .clip(roi)
-        )
-        
-        drought_area_img = ee.Image.pixelArea().mask(drought_classified.eq(1)).divide(1e6)
-        stats = drought_area_img.reduceRegion(
-            reducer=ee.Reducer.sum(), geometry=roi, scale=30, maxPixels=1e9
-        )
-        severe_drought_sqkm = float(stats.get('area', 0).getInfo() or 0.0)
-        
-        vis_params = {
-            'min': 1,
-            'max': 3,
-            'palette': ['#ff0033', '#ffcc00', '#00ff66'] # Red (Severe), Yellow (Mod), Green (Healthy)
-        }
-        metrics = {
-            'disaster_type': 'Drought Assessment (NDVI)',
-            'affected_area_sqkm': round(severe_drought_sqkm, 2),
-            'sensor_used': 'Sentinel-2 MSI (B4, B8)',
-            'threshold': 'NDVI < 0.2 (Severe)'
-        }
-        return drought_classified, vis_params, metrics
-    except Exception as e:
-        return ee.Image.constant(0).clip(roi), {'min': 0, 'max': 1}, {'affected_area_sqkm': 0.0, 'error': str(e)}
+# =============================================================================
+# 2. FEATURE EXTRACTION & TRAINING DATA GENERATION
+# =============================================================================
 
-def monitor_wildfires(roi, start_date, end_date):
-    """Calculates NBR = (NIR - SWIR2) / (NIR + SWIR2) using Sentinel-2 B8 and B12."""
-    try:
-        s2_col = get_safe_s2_collection(roi, start_date, end_date)
-        s2_img = s2_col.median().clip(roi)
-        nbr = s2_img.normalizedDifference(['B8', 'B12']).rename('NBR')
-        
-        burn_mask = nbr.lt(0.1)
-        burn_layer = nbr.updateMask(burn_mask)
-        
-        area_img = ee.Image.pixelArea().mask(burn_mask).divide(1e6)
-        stats = area_img.reduceRegion(
-            reducer=ee.Reducer.sum(), geometry=roi, scale=20, maxPixels=1e9
-        )
-        burned_sqkm = float(stats.get('area', 0).getInfo() or 0.0)
-        
-        vis_params = {
-            'min': -0.6,
-            'max': 0.1,
-            'palette': ['#1a1a1a', '#ff6600', '#ff0000'] # Black -> Orange -> Red
-        }
-        metrics = {
-            'disaster_type': 'Wildfire Monitoring (NBR)',
-            'affected_area_sqkm': round(burned_sqkm, 2),
-            'sensor_used': 'Sentinel-2 MSI (B8, B12)',
-            'threshold': 'NBR < 0.1'
-        }
-        return burn_layer, vis_params, metrics
-    except Exception as e:
-        return ee.Image.constant(0).clip(roi), {'min': 0, 'max': 1}, {'affected_area_sqkm': 0.0, 'error': str(e)}
-
-def analyze_cyclone(roi, start_date, end_date):
-    """Analyzes storm surface impacts using Sentinel-1 SAR backscatter VV anomalies."""
-    try:
-        s1_col = (
-            ee.ImageCollection('COPERNICUS/S1_GRD')
-            .filterBounds(roi)
-            .filterDate(start_date, end_date)
-            .filter(ee.Filter.eq('instrumentMode', 'IW'))
-            .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
-        )
-        
-        if s1_col.size().getInfo() > 0:
-            sar_img = s1_col.select('VV').median().clip(roi)
-            roughness_mask = sar_img.lt(-15)
-            
-            area_img = ee.Image.pixelArea().mask(roughness_mask).divide(1e6)
-            stats = area_img.reduceRegion(
-                reducer=ee.Reducer.sum(), geometry=roi, scale=100, maxPixels=1e9
-            )
-            affected_sqkm = float(stats.get('area', 0).getInfo() or 0.0)
-            
-            vis_params = {
-                'min': -25.0,
-                'max': 0.0,
-                'palette': ['#000033', '#0000ff', '#00ffff', '#ffff00', '#ff0000']
-            }
-            sensor_used = 'Sentinel-1 SAR IW (VV)'
-            layer = sar_img
-        else:
-            # Fallback to Sentinel-2 Moisture Proxy (SWIR/NIR)
-            s2_col = get_safe_s2_collection(roi, start_date, end_date)
-            layer = s2_col.median().clip(roi).select(['B11', 'B8', 'B4'])
-            vis_params = {'min': 0.0, 'max': 0.8, 'gamma': 1.2}
-            affected_sqkm = 0.0
-            sensor_used = 'Sentinel-2 MSI SWIR Moisture Proxy'
-
-        metrics = {
-            'disaster_type': 'Cyclone Track Analysis',
-            'affected_area_sqkm': round(affected_sqkm, 2),
-            'sensor_used': sensor_used,
-            'threshold': 'Radar Anomaly < -15dB'
-        }
-        return layer, vis_params, metrics
-    except Exception as e:
-        return ee.Image.constant(0).clip(roi), {'min': 0, 'max': 1}, {'affected_area_sqkm': 0.0, 'error': str(e)}
-
-# ==========================================
-# 5. SIDEBAR CONTROLS & LIVE DATE STREAMER
-# ==========================================
-st.sidebar.title("🌍 Earth Intelligence")
-st.sidebar.markdown("---")
-
-disaster_mode = st.sidebar.selectbox(
-    "🛰️ Select Disaster Pipeline",
-    [
-        "Flood Detection (NDWI)",
-        "Drought Assessment (NDVI)",
-        "Wildfire Monitoring (NBR)",
-        "Cyclone Track Analysis"
-    ]
-)
-
-current_date = datetime.date.today()
-start_date = current_date - datetime.timedelta(days=90)
-
-ee_start_str = start_date.strftime('%Y-%m-%d')
-ee_end_str = current_date.strftime('%Y-%m-%d')
-
-st.sidebar.markdown("### ⏱️ Temporal Window")
-st.sidebar.info(
-    f"**Live Dynamic Feed (90 Days):**\n\n"
-    f"🟢 **Start:** {ee_start_str}\n\n"
-    f"🔴 **End:** {ee_end_str}"
-)
-
-st.sidebar.markdown("---")
-if ee_initialized:
-    st.sidebar.success("🟢 Google Earth Engine: Connected")
-else:
-    st.sidebar.error(f"🔴 GEE Error: {ee_status_msg}")
-
-# ==========================================
-# 6. DYNAMIC GEOLOCATION & MAP CONTROL PANEL
-# ==========================================
-st.title("🌐 Open-World Multi-Disaster Prediction Engine")
-st.markdown("Type any location globally or draw a custom Region of Interest (ROI) on the map to trigger live analysis.")
-
-search_query = st.text_input("🔍 Global Location Search", placeholder="e.g., California, USA or Tokyo, Japan")
-
-map_center = [20.0, 0.0]
-map_zoom = 2
-
-if search_query:
-    try:
-        headers = {'User-Agent': 'EarthIntelligenceApp/1.0'}
-        url = f"https://nominatim.openstreetmap.org/search?q={search_query}&format=json&limit=1"
-        res = requests.get(url, headers=headers).json()
-        if res:
-            map_center = [float(res[0]['lat']), float(res[0]['lon'])]
-            map_zoom = 10
-            st.success(f"📍 Target locked: {res[0]['display_name']}")
-        else:
-            st.warning("⚠️ Location not found. Maintaining default global view.")
-    except Exception as ge:
-        st.error(f"Geocoding error: {ge}")
-
-# Initialize Geemap canvas
-m = geemap.Map(
-    center=map_center,
-    zoom=map_zoom,
-    plugin_Draw=True,
-    Draw_export=False,
-    locate_control=True
-)
-m.add_basemap("HYBRID")
-
-# ==========================================
-# 7. EVENT DRIVEN LOGIC CONTROLLER & RENDERING
-# ==========================================
-# Render the drawing map canvas
-map_data = st_folium(
-    m,
-    width=1400,
-    height=550,
-    key="earth_intelligence_map",
-    returned_objects=["last_active_drawing"]
-)
-
-# Robust ROI Resolution
-roi = None
-if map_data and map_data.get("last_active_drawing"):
-    drawing_geom = map_data["last_active_drawing"]["geometry"]
-    geom_type = drawing_geom["type"]
-    coords = drawing_geom["coordinates"]
-    
-    if geom_type == "Polygon":
-        roi = ee.Geometry.Polygon(coords)
-        st.info("🎯 Custom Drawn Polygon ROI active.")
-    elif geom_type == "Point":
-        roi = ee.Geometry.Point(coords).buffer(10000)
-        st.info("🎯 Point ROI active (10km buffer applied).")
-else:
-    # Default 0.5-degree bounding box around the current map center
-    lat_c, lon_c = map_center[0], map_center[1]
-    roi = ee.Geometry.BBox(lon_c - 0.25, lat_c - 0.25, lon_c + 0.25, lat_c + 0.25)
-    st.caption("ℹ️ *Default 0.5° bounding box active around target location.*")
-
-# Executive Pipeline Execution
-ee_layer = None
-vis_params = {}
-metrics_data = {}
-
-if ee_initialized and roi:
-    with st.spinner(f"🛰️ Processing Satellite Feeds for {disaster_mode}..."):
-        if disaster_mode == "Flood Detection (NDWI)":
-            ee_layer, vis_params, metrics_data = detect_floods(roi, ee_start_str, ee_end_str)
-        elif disaster_mode == "Drought Assessment (NDVI)":
-            ee_layer, vis_params, metrics_data = assess_drought(roi, ee_start_str, ee_end_str)
-        elif disaster_mode == "Wildfire Monitoring (NBR)":
-            ee_layer, vis_params, metrics_data = monitor_wildfires(roi, ee_start_str, ee_end_str)
-        elif disaster_mode == "Cyclone Track Analysis":
-            ee_layer, vis_params, metrics_data = analyze_cyclone(roi, ee_start_str, ee_end_str)
-
-# Map Overlay for Analysis Layer
-if ee_initialized and ee_layer is not None:
-    analysis_map = geemap.Map(center=map_center, zoom=map_zoom)
-    analysis_map.add_basemap("HYBRID")
-    analysis_map.addLayer(ee_layer, vis_params, f"Analysis: {disaster_mode}")
-    
-    # Highlight ROI boundary
-    roi_outline = ee.FeatureCollection([ee.Feature(roi)]).style(color='00f6ff', fillColor='00f6ff11', width=2)
-    analysis_map.addLayer(roi_outline, {}, "ROI Boundary")
-    
-    st.markdown("### 🗺️ Analyzed Satellite Visualization")
-    st_folium(analysis_map, width=1400, height=550, key="processed_output_map")
-
-# ==========================================
-# 8. METRIC INFOCARDS & REPORT EXPORT
-# ==========================================
-st.markdown("### 📊 Real-Time Analytics & Telemetry")
-
-col1, col2, col3, col4 = st.columns(4)
-
-affected_area = metrics_data.get('affected_area_sqkm', 0.0)
-sensor_used = metrics_data.get('sensor_used', 'Sentinel Spacecraft')
-threshold = metrics_data.get('threshold', 'Adaptive Index')
-
-def create_card(label, value, subtext, border_color="#00f6ff"):
-    return f"""
-    <div style="
-        background: rgba(15, 23, 42, 0.85);
-        border: 1px solid {border_color}55;
-        border-top: 3px solid {border_color};
-        border-radius: 10px;
-        padding: 16px;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-        margin-bottom: 10px;">
-        <p style="color: #94a3b8; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; margin:0;">{label}</p>
-        <h2 style="color: #ffffff; font-size: 1.7rem; font-weight: 800; margin: 6px 0;">{value}</h2>
-        <p style="color: #64748b; font-size: 0.75rem; margin:0;">{subtext}</p>
-    </div>
+def generate_ground_truth_samples(
+    composite: ee.Image, 
+    roi: ee.Geometry, 
+    num_samples: int = 2000
+) -> ee.FeatureCollection:
     """
+    Applies synthetic labeling based on spectral thresholds to construct ground-truth 
+    training points across the Region of Interest.
+    """
+    ndvi = composite.select('NDVI')
+    ndwi = composite.select('NDWI')
+    
+    # Define heuristic label logic:
+    # Flood: High Water Index (NDWI > 0.1)
+    # Drought: Low Vegetation Index (NDVI < 0.2) AND Low Water Index (NDWI < -0.1)
+    # Normal: Remaining conditions
+    label_image = ee.Image(CLASS_MAPPING["Normal"]) \
+        .where(ndwi.gt(0.1), CLASS_MAPPING["Flood"]) \
+        .where(ndvi.lt(0.2).And(ndwi.lt(-0.1)), CLASS_MAPPING["Drought"]) \
+        .rename('label')
 
-with col1:
-    status_color = "#ff0055" if affected_area > 50 else "#00f6ff"
-    st.markdown(create_card("Impacted Area", f"{affected_area:,.2f} km²", f"Threshold: {threshold}", status_color), unsafe_allow_html=True)
-
-with col2:
-    st.markdown(create_card("Active Pipeline", disaster_mode.split()[0], f"Mode: {disaster_mode}", "#3b82f6"), unsafe_allow_html=True)
-
-with col3:
-    st.markdown(create_card("Satellite Ingest", sensor_used.split()[0], f"Sensor: {sensor_used}", "#8b5cf6"), unsafe_allow_html=True)
-
-with col4:
-    st.markdown(create_card("System Health", "ONLINE", f"Window: Past 90 Days", "#10b981"), unsafe_allow_html=True)
-
-# Export Data Section
-with st.expander("📋 Export Intelligence Report"):
-    df_report = pd.DataFrame([{
-        "Timestamp (UTC)": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        "Disaster Category": disaster_mode,
-        "Impacted Area (sq km)": affected_area,
-        "Spacecraft / Sensor": sensor_used,
-        "Applied Threshold": threshold,
-        "Start Date": ee_start_str,
-        "End Date": ee_end_str
-    }])
-    st.dataframe(df_report, use_container_width=True)
-    csv = df_report.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        "📥 Download Executive CSV Report",
-        data=csv,
-        file_name=f"EarthIntelligence_Report_{ee_end_str}.csv",
-        mime="text/csv"
+    sample_image = composite.select(['NDVI', 'NDWI']).addBands(label_image)
+    
+    samples = sample_image.stratifiedSample(
+        numPoints=num_samples,
+        classBand='label',
+        region=roi,
+        scale=30,
+        geometries=True
     )
+    return samples
+
+
+def extract_features_to_dataframe(samples: ee.FeatureCollection) -> pd.DataFrame:
+    """Extracts features from Earth Engine FeatureCollection to a local Pandas DataFrame."""
+    logger.info("Downloading stratified samples to local memory...")
+    samples_dict = samples.getInfo()['features']
+    
+    data = []
+    for feat in samples_dict:
+        props = feat['properties']
+        data.append({
+            'NDVI': props.get('NDVI'),
+            'NDWI': props.get('NDWI'),
+            'label': props.get('label')
+        })
+        
+    df = pd.DataFrame(data).dropna()
+    return df
+
+
+# =============================================================================
+# 3. MACHINE LEARNING MODEL DEVELOPMENT
+# =============================================================================
+
+def train_random_forest(
+    df: pd.DataFrame
+) -> Tuple[RandomForestClassifier, Dict[str, Any]]:
+    """Trains a Scikit-Learn Random Forest Classifier and computes performance metrics."""
+    X = df[['NDVI', 'NDWI']]
+    y = df['label']
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.25, random_state=42, stratify=y
+    )
+    
+    clf = RandomForestClassifier(
+        n_estimators=100, 
+        max_depth=10, 
+        random_state=42, 
+        n_jobs=-1
+    )
+    clf.fit(X_train, y_train)
+    
+    y_pred = clf.predict(X_test)
+    accuracy = float(accuracy_score(y_test, y_pred))
+    report = classification_report(
+        y_test, y_pred, target_names=[CLASS_LABELS[i] for i in sorted(CLASS_LABELS.keys())], output_dict=True
+    )
+    
+    metrics = {
+        'accuracy': accuracy,
+        'classification_report': report
+    }
+    logger.info(f"Random Forest successfully trained. Validation Accuracy: {accuracy:.4f}")
+    return clf, metrics
+
+
+# =============================================================================
+# 4. EARTH ENGINE CLASSIFICATION & INFERENCE
+# =============================================================================
+
+def apply_native_ee_classification(
+    composite: ee.Image, 
+    training_samples: ee.FeatureCollection
+) -> ee.Image:
+    """
+    Trains a native Earth Engine Random Forest model using the sampled points 
+    to perform server-side inference directly over the full raster scene.
+    """
+    classifier = ee.Classifier.smileRandomForest(100).train(
+        features=training_samples,
+        classProperty='label',
+        inputProperties=['NDVI', 'NDWI']
+    )
+    classified_image = composite.select(['NDVI', 'NDWI']).classify(classifier)
+    return classified_image
+
+
+# =============================================================================
+# 5. VISUALIZATION & DATA SUMMARY EXPORT
+# =============================================================================
+
+def generate_interactive_map(
+    roi: ee.Geometry, 
+    composite: ee.Image, 
+    classified: ee.Image
+) -> geemap.Map:
+    """Generates a high-fidelity visual prediction map using geemap."""
+    Map = geemap.Map()
+    Map.centerObject(roi, 9)
+    
+    # Layer 1: True Color Composite
+    Map.addLayer(
+        composite, 
+        {'bands': ['B4', 'B3', 'B2'], 'min': 0.0, 'max': 0.3}, 
+        'Sentinel-2 RGB'
+    )
+    
+    # Layer 2: Predictions
+    viz_params = {
+        'min': 0,
+        'max': 2,
+        'palette': PALETTE
+    }
+    Map.addLayer(classified, viz_params, 'Drought/Flood Predictions')
+    
+    # Legend
+    legend_dict = {
+        'Drought': PALETTE[0],
+        'Normal': PALETTE[1],
+        'Flood': PALETTE[2]
+    }
+    Map.add_legend(title="Hazard Classification", legend_dict=legend_dict)
+    
+    return Map
+
+
+def export_data_summary(
+    classified: ee.Image, 
+    roi: ee.Geometry, 
+    metrics: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Calculates areal statistics for predictions and synthesizes execution metrics."""
+    logger.info("Computing spatial area calculations across target region...")
+    area_image = ee.Image.pixelArea().addBands(classified)
+    
+    stats = area_image.reduceRegion(
+        reducer=ee.Reducer.sum().group(
+            groupField=1,
+            groupName='class'
+        ),
+        geometry=roi,
+        scale=30,
+        maxPixels=1e10
+    ).getInfo()
+    
+    class_areas_sqkm = {}
+    for item in stats.get('groups', []):
+        class_idx = int(item['class'])
+        label = CLASS_LABELS.get(class_idx, "Unknown")
+        area_sqkm = item['sum'] / 1e6  # Convert square meters to Sq Kilometers
+        class_areas_sqkm[label] = round(area_sqkm, 2)
+        
+    summary = {
+        'model_performance': metrics,
+        'spatial_distribution_sqkm': class_areas_sqkm
+    }
+    return summary
+
+
+# =============================================================================
+# MAIN PIPELINE EXECUTION
+# =============================================================================
+
+def run_pipeline(
+    project_id: str, 
+    roi: ee.Geometry, 
+    start_date: str, 
+    end_date: str
+) -> Tuple[geemap.Map, Dict[str, Any]]:
+    """Executes the full Drought and Flood Predictive AI pipeline end-to-end."""
+    initialize_earth_engine(project_id=project_id)
+    
+    # Step 1: Preprocessing & Composite Generation
+    composite = get_sentinel2_composite(roi, start_date, end_date)
+    
+    # Step 2: Sampling
+    samples = generate_ground_truth_samples(composite, roi, num_samples=1500)
+    
+    # Step 3: Local ML Training
+    df_samples = extract_features_to_dataframe(samples)
+    rf_model, metrics = train_random_forest(df_samples)
+    
+    # Step 4: Server-Side EE Raster Classification
+    classified_map = apply_native_ee_classification(composite, samples)
+    
+    # Step 5: Render Maps & Export Summaries
+    map_object = generate_interactive_map(roi, composite, classified_map)
+    summary_data = export_data_summary(classified_map, roi, metrics)
+    
+    return map_object, summary_data
+
+
+if __name__ == "__main__":
+    # Example Execution Parameters
+    GOOGLE_PROJECT_ID = "your-gcp-project-id"  # Replace with valid GCP Project ID
+    
+    # Target ROI: Region vulnerable to seasonal flooding and dry spells
+    TARGET_ROI = ee.Geometry.Polygon([
+        [[13.80, 12.80], [13.80, 13.50], [14.80, 13.50], [14.80, 12.80]]
+    ])
+    
+    START_PERIOD = "2023-06-01"
+    END_PERIOD = "2023-10-31"
+    
+    try:
+        prediction_map, summary = run_pipeline(
+            project_id=GOOGLE_PROJECT_ID,
+            roi=TARGET_ROI,
+            start_date=START_PERIOD,
+            end_date=END_PERIOD
+        )
+        
+        logger.info("Pipeline executed successfully.")
+        print("\n--- DATA SUMMARY STRUCT ---")
+        print(json.dumps(summary, indent=2))
+        
+        # Export map to HTML for local rendering:
+        # prediction_map.to_html("drought_flood_prediction.html")
+        
+    except Exception as e:
+        logger.critical(f"Pipeline execution failed: {e}", exc_info=True)
