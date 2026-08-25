@@ -551,7 +551,7 @@ st.subheader("⚡ Real-Time Satellite Analytics & Target Execution")
 # If user drew a shape, use it; otherwise, construct a dynamic fallback ROI around map center.
 active_roi = None
 
-if roi_geometry is not None:
+if roi is not None:
     active_roi = roi_geometry
     st.info("🎯 **Target Locked:** Executing deep-space multi-spectral analysis on user-defined ROI polygon.")
 else:
